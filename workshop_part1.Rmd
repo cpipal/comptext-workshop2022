@@ -38,7 +38,7 @@ head(data_uk)
 Create a quanteda DFM.
 
 ```{r}
-dfm_uk <- dfm_uk <- corpus_uk %>% 
+dfm_uk <- corpus_uk %>% 
   tokens() %>% 
   dfm(verbose = TRUE,
       tolower = TRUE,
@@ -166,7 +166,16 @@ terms
 
 How could you use both dictionary analysis and topic modeling to analyze the sentiment regarding different issues like the European Union, security, or climate change? Choose a topic and plot the sentiment regarding that topic over time.
 
+
+
 ```{r}
+
+# Hint: You can use a topic model to predict the most likely topic of a speech and / or to predict the topic share using the Gamma matrix:
+
+topic1_share <- lda_out@gamma[,1]
+
+
+
 
 ```
 
