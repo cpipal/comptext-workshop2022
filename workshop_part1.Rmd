@@ -3,7 +3,10 @@
 
 We often use dictionaries for sentiment analysis: using a dictionary of positive and negative words, we compute a sentiment score for each individual document.
 
+
 Let's apply this technique to prime minister speeches from the United Kingdom
+
+First, download the EUSpeech V2 dataset: https://osf.io/9ahw5/download and put it into your working directory.
 
 ```{r}
 library(tidyverse)
