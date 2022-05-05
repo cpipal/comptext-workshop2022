@@ -1,0 +1,252 @@
+
+Part III: Joint sentiment-topic modelling
+
+First, let's install the sentitopics package from Github using the `install_github()` function from the `devtools` package. You might have to activate the C++11 mode of the C++ compiler first:
+
+```{r}
+Sys.setenv("PKG_CXXFLAGS"="-std=c++11") # activate C++11 compiler
+
+library(devtools)
+install_github('cpipal/sentitopics')
+
+library(tidyverse)
+library(quanteda)
+library(sentitopics)
+library(foreach)
+library(rngtools)
+
+```
+
+We again use prime minister speeches from the UK using the EUSpeech dataset. As before, we have to create a DFM from the speech corpus. We also apply some preprocessing.
+
+```{r}
+load("EUspeech_V2.RData") 
+
+corpus_uk <- corpus %>% 
+  quanteda::corpus_subset(country == "Great Britain")
+
+data_uk <- corpus_uk %>% 
+  convert(to = "data.frame")
+
+dfm_uk <- corpus_uk %>% 
+  tokens() %>% 
+  dfm(verbose = TRUE,
+      tolower = TRUE,
+      remove_punct = TRUE,
+      remove_numbers = TRUE) %>% 
+  dfm_remove(stopwords("english")) %>% 
+  dfm_wordstem(language = "english") %>% 
+  dfm_trim(min_termfreq = 3)
+
+dfm_uk
+topfeatures(dfm_uk)
+```
+
+Now the only thing left is that we have to load a dictionary that we want to use as the supervised input for the JST/rJST models. We are again going to use the Lexcoder dictionary that comes with the `quanteda` package. But now we also stem the dictionary so it matches with the DFM.
+
+```{r}
+positive <- data_dictionary_LSD2015$positive %>% 
+    str_replace_all( "[[:punct:]]", "") %>% 
+    str_replace_all( " ", "") %>% 
+    char_wordstem()
+
+negative <- data_dictionary_LSD2015$negative %>% 
+    str_replace_all( "[[:punct:]]", "") %>% 
+    str_replace_all( " ", "") %>% 
+    char_wordstem()
+
+dict <- dictionary(list(
+    positive = positive,
+    negative = negative))
+
+```
+
+
+We can estimate the speech-level sentiment using the `jst()` function of the `sentitopics` package. Similarly to LDA, we have to choose the number of topics and iterations. We can also experiment with hyperparameter settings, but going with the default values is usually fine.
+
+```{r, cache = TRUE}
+set.seed(123)
+jst_out <- sentitopics::jst(dfm_uk, dict, numTopics = 30, numIters = 100)
+
+```
+
+
+That's it! We can now easily inspect the different model results using the `get_parameter()` function. Let's try this to get the speech-level sentiment estimates for each speech in our dataset:
+
+```{r}
+pi <- sentitopics::get_parameter(jst_out, "pi")
+pi %>% 
+  select(sent1, sent2, sent3) %>% 
+  head()
+
+```
+
+What do thoese labels sent1, sent2, sent3 mean? JST is able to estimate 2 (positive, negative) or 3 (neutral, positive, negative) sentiment estimates. Because we opted for the default parameters when running the model, we estimated all three categories. Essentially, JST results are probabilities that a document belongs to one of the 2 (or in our case 3) sentiment categories. For instance, JST estimated that the probability of the first text (text5343) being neutral is 0.42 (sent1), the probability of it being positive is 0.25 (sent2), and the probability of the text being negative is 0.34 (sent3). We can also use these probabilities to calculate an overall sentiment score. For this we substract the negative score of a text from its positive score.
+
+```{r}
+pi %>% 
+  mutate(sentiment = sent2 - sent3) %>% 
+  select(sentiment) %>% 
+  head()
+
+```
+
+Similar to LDA models, JST model results usually differ across model model runs (This is also known as the issue of multimodality). We can use this variation to compute uncertainty estimates around sentiment scores by running JST several times. To run the model several times, we can use the `jstManyRuns()` function. Here we just have to specify how often we want to run the model. It is important to note here that the function only returns the averaged results of the document-level sentiment scores and their associated uncertainty measures. Keeping all model information would quickly result into reaching RAM limits. In our example we run the model 10 times, and use the default settings for the number of CPU cores (available cores  - 3). We could change those settings by using the parameter ncores. 
+
+```{r}
+set.seed(123)
+jst_out <- sentitopics::jstManyRuns(dfm_uk, dict, numIters = 100, n = 10)
+
+jst_out %>% 
+  select(sent2_mean, sent2_sd, sent2_se, sent2_ci_high, sent2_ci_low) %>% 
+  head()
+
+
+
+
+```
+
+
+Let's use these last results to investigate how the sentiment of prime minister speeches in the UK developed over time:
+
+
+```{r, cache = TRUE}
+library(zoo)
+data <- jst_out %>% 
+  mutate(sentiment = sent2_mean - sent3_mean) %>% 
+  mutate(year_month = as.yearmon(date)) %>% 
+  group_by(year_month) %>% 
+  summarise(sentiment = mean(sentiment))
+
+
+plot <- data %>% 
+  ggplot(aes(x = year_month, y = sentiment)) +
+  geom_point(shape = 1, color = "black", size=1) +
+  geom_smooth(color = "black", se = TRUE, size = 1, level = 0.95) +
+  ylab("Sentiment") +
+  xlab("") + 
+  scale_x_continuous(name = "",
+                     breaks = c(2007:2020))
+
+plot
+
+```
+
+
+This does look a bit different compared to the results from the dictionary application. Usually JST is able to predict sentiment more accurately than a dictionary alone.
+
+
+While JST assumes that a document is first structured by its sentiment, rJST assumend that a text is structured by topics first. We can therefore use the rJST model to estimate topic-specific sentiment (e.g. how positive/negative is a text about the EU). Estimating a rJST model with the `sentitopics` can also easily be done with the `jst_reversed()` function. Again, we have to specify the number of topics we expect to find in the corpus. In addition, we also can play around with the hyperparameter settings. In this example we just use the default settings and run the model 100 times (You should use more iterations in a real application).
+
+```{r, cache = TRUE}
+set.seed(123)
+rjst_out <- sentitopics::jst_reversed(dfm_uk, dict, numTopics = 30, numIters = 100, 
+                                  alpha = 1, gamma = 50, updateParaStep = 50)
+```
+
+How do rJST senti-topics look like? First, we ce can extract the words that load highly on each topic-sentiment with the `top20words()` or `topNwords()` functions. These words list are similar to what you would get from an LDA mode, but with an important addition: For each topic we get three word lists: One each for neutral, positive, and negative topic-sentiment. 
+
+
+```{r, cache = TRUE}
+words <- rjst_out %>% sentitopics::top20words()
+
+words
+```
+
+First, let's look at topic occurrence. In the previous table it looked like topic no. 9 is about the European Union.
+
+```{r}
+theta <- rjst_out %>% 
+  sentitopics::get_parameter("theta")
+
+topics_quarterly <- theta %>% 
+  mutate(year_month = as.yearmon(date)) %>% 
+  group_by(year_month) %>% 
+  tidylog::summarise(topic_eu = mean(topic9),
+                     topic_health = mean(topic5),
+                     topic_afghanistan = mean(topic17)) 
+
+data <- topics_quarterly %>% 
+  gather(topic, score, topic_eu:topic_afghanistan, factor_key=TRUE)
+
+
+plot_topic_prevalance <- data %>% 
+  ggplot(aes(x = year_month, y = score, group = topic)) +
+  geom_point(aes(shape = topic), size=2, alpha = 0.3) +
+  geom_smooth(aes(linetype = topic), size = 1) +
+  scale_linetype_manual(values=c("solid", "dashed", "dotted")) +
+  scale_y_continuous(name = "Topic prevalance") +
+  scale_x_continuous(name = "",
+                     breaks = c(1990, 1995, 2000, 2005, 2010, 2015, 2020),
+                     expand = c(0, 0)) + 
+  ggtitle("rJST Topic Prevalence") 
+
+plot_topic_prevalance
+
+
+```
+
+
+We can now use the estimated topic-sentiment to see how the sentiment about the European Union changed over time. To increase validity we only use speeches with an estimated topic proportion of min. 10 %.
+
+```{r}
+
+speeches_eu <- theta %>% tidylog::filter(topic9 >= 0.10) %>% 
+  rownames_to_column(var = "docID")
+
+eu_ids <- speeches_eu$docID 
+
+pi <- rjst_out %>% sentitopics::get_parameter("pi")
+
+pi_eu <- pi %>% 
+  tidylog::filter(topic == 9 & 
+                    docID %in% eu_ids) %>% 
+  tidylog::mutate(sentiment = sent2 - sent3) %>% 
+  mutate(year_month = as.yearmon(date)) %>% 
+  group_by(year_month) %>% 
+  summarize(sentiment = mean(sentiment))
+
+plot_sentiment_eu <- pi_eu %>% 
+  ggplot(aes(x = year_month, y = sentiment)) +
+  geom_point(size=2, alpha = 0.3) +
+  geom_smooth(size = 1) +
+  ylab("Sentiment") +
+  xlab("") +
+
+  theme(legend.position = "bottom") +
+  ggtitle("rJST Topic-Sentiment EU") +
+  ylim(-1,1)
+
+plot_sentiment_eu
+
+```
+
+
+
+
+# Coding challenge:
+
+1) Pick a country and analyze the overall sentiment political leaders expressed over time. 
+
+2) Do you see differences when looking at topic specific sentiment? Between leaders? Over time?
+
+You can use the translated versions of the Lexicoder dictionary from Proksch et al. (2019) for that task!
+
+```{r}
+
+# e.g.:
+
+# How do the different PMs speak about the EU on average?
+
+# And about security?
+
+# What's the most positive topic for each PM?
+
+# And the most negative?
+
+```
+
+
+
+
+

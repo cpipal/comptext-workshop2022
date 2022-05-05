@@ -1,0 +1,170 @@
+
+# Part I: Dictionaries 
+
+We often use dictionaries for sentiment analysis: using a dictionary of positive and negative words, we compute a sentiment score for each individual document.
+
+Let's apply this technique to prime minister speeches from the United Kingdom
+
+```{r}
+library(tidyverse)
+library(quanteda)
+
+load("EUspeech_V2.RData") 
+```
+
+We will use the Lexicoder Sentiment Dictionary (LSD) (Young and Soroka 2012) to measure the extent to which UK leaders adopted a positive or negative tone. The LSD is provided with the quanteda package.
+
+```{r}
+dict <- quanteda::data_dictionary_LSD2015[1:2]
+#  Let's have a look at a random sample of positive and negative words
+sample(dict$positive, 10)
+sample(dict$negative, 10)
+```
+
+The texts in the EUSpeech dataset are already provided as a quanteda corpus object named corpus. We can use the corpus_subset function to filter the corpus. Let's select all speeches from the UK and turn the corpus into a dataframe so we can have a look at it (Note: Quite often this workflow goes the other way around).
+
+```{r}
+corpus_uk <- corpus %>% 
+  quanteda::corpus_subset(country == "Great Britain")
+
+data_uk <- corpus_uk %>% 
+  convert(to = "data.frame")
+head(data_uk)
+```
+
+Create a quanteda DFM.
+
+```{r}
+dfm_uk <- dfm_uk <- corpus_uk %>% 
+  tokens() %>% 
+  dfm(verbose = TRUE,
+      tolower = TRUE,
+      remove_punct = TRUE,
+      remove_numbers = TRUE) %>% 
+  dfm_remove(stopwords("english"))
+```
+
+We can now easily apply the dictionary to the corpus, count the number of positive and negative words in each text, and add it to our data frame.
+
+```{r}
+dict_scores <- dfm_uk %>% 
+  dfm_lookup( dictionary = dict) %>% 
+  convert(to = "data.frame")
+
+data_uk <- data_uk %>% 
+  left_join(dict_scores, by = "doc_id")
+```
+
+We can then calculate the sentiment score and add it to the data frame as a new variable. It would also be good to weigh the word counts by the number of words in a text.
+
+```{r}
+data_uk <- data_uk %>% 
+  mutate(sentiment = (positive / length - negative / length) * 100)
+```
+
+And answer some descriptive questions:
+
+```{r}
+# What is the average sentiment score?
+mean(data_uk$sentiment)
+
+# What is the most positive speech?
+data_uk %>% 
+  slice_max(sentiment, n = 1)
+
+# What is the most negative speech?
+data_uk %>% 
+  slice_min(sentiment, n = 1)
+```
+
+We can of course also do these analyses for each of the PMs individually.
+
+```{r}
+data_uk %>% 
+  group_by(speaker) %>% 
+  summarize(mean_sentiment = mean(sentiment))
+
+data_uk %>% 
+  group_by(speaker) %>% 
+  slice_max(sentiment, n = 1)
+
+data_uk %>% 
+  group_by(speaker) %>% 
+  slice_min(sentiment, n = 1)
+```
+
+Finally, let's track the sentiment of UK PMs over time.
+
+```{r}
+library(zoo)
+data <- data_uk %>% 
+  mutate(year_month = as.yearmon(date)) %>% 
+  group_by(year_month) %>% 
+  summarise(sentiment = mean(sentiment))
+
+
+plot <- data %>% 
+  ggplot(aes(x = year_month, y = sentiment)) +
+  geom_point(shape = 1, color = "black", size=1) +
+  geom_smooth(color = "black", se = TRUE, size = 1, level = 0.95) +
+  ylab("Sentiment") +
+  xlab("") + 
+  scale_x_continuous(name = "",
+                     breaks = c(2007:2020))
+
+plot
+```
+
+
+
+# Part II: Topic Models
+
+Let's run a simple LDA topic model on the UK prime minister speeches. We can use the topicmodels package for that.
+
+```{r}
+library(topicmodels)
+```
+
+But first we should probably stem and trim our DFM:
+
+```{r}
+dfm_uk <- dfm_uk %>% 
+  dfm_wordstem(language = "english")
+dfm_uk
+
+dfm_uk <- dfm_uk %>% 
+  dfm_trim(min_termfreq = 3)
+dfm_uk
+```
+
+Now we can run the topic model.
+
+```{r}
+K <- 30
+lda_out <- LDA(dfm_uk, k = K, method = "Gibbs", 
+                control = list(verbose=25L, seed = 123, burnin = 100, iter = 300))
+```
+
+We can use `get_terms` to get the top `n` terms from the topic model, and `get_topics` to predict the top `k` topic for each document. This will help us interpret the results of the model.
+
+```{r}
+terms <- get_terms(lda_out, 15)
+terms[,1]
+topics <- get_topics(lda_out, 1)
+head(topics)
+
+terms
+```
+
+
+
+
+# Coding challenge:
+
+How could you use both dictionary analysis and topic modeling to analyze the sentiment regarding different issues like the European Union, security, or climate change? Choose a topic and plot the sentiment regarding that topic over time.
+
+```{r}
+
+```
+
+
